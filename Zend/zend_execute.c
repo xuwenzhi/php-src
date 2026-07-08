@@ -213,6 +213,16 @@ ZEND_API void zend_vm_stack_destroy(void)
 	}
 }
 
+static zend_always_inline int tco_is_tail(const zend_op *op) {
+	const zend_op *n = op + 1;
+	if (n->opcode == ZEND_RETURN && n->op1_type == IS_VAR && n->op1.var == op->result.var) return 1;
+	if (n->opcode == ZEND_QM_ASSIGN && n->op1_type == IS_VAR && n->op1.var == op->result.var) {
+		const zend_op *r = n + 1;
+		if (r->opcode == ZEND_JMP) r = OP_JMP_ADDR(r, r->op1);
+		if (r->opcode == ZEND_RETURN && r->op1_type == n->result_type && r->op1.var == n->result.var) return 1;
+	}
+	return 0;
+}
 ZEND_API void* zend_vm_stack_extend(size_t size)
 {
 	zend_vm_stack stack;

@@ -4048,6 +4048,52 @@ ZEND_VM_HOT_HANDLER(130, ZEND_DO_UCALL, ANY, ANY, SPEC(RETVAL,OBSERVER))
 		ret = EX_VAR(opline->result.var);
 	}
 
+		if (RETURN_VALUE_USED(opline)
+		 && tco_is_tail(opline)
+		 && EXPECTED(zend_execute_ex == execute_ex)
+		 && !ZEND_OBSERVER_ENABLED
+		 && !(EX_CALL_INFO() & (ZEND_CALL_GENERATOR|ZEND_CALL_OBSERVED|ZEND_CALL_HAS_EXTRA_NAMED_PARAMS))
+		 && !(ZEND_CALL_INFO(call) & (ZEND_CALL_GENERATOR|ZEND_CALL_HAS_EXTRA_NAMED_PARAMS))
+		 && fbc->type == ZEND_USER_FUNCTION
+		 && EX(func)->type == ZEND_USER_FUNCTION
+		 && !(fbc->common.fn_flags & (ZEND_ACC_CLOSURE|ZEND_ACC_CALL_VIA_TRAMPOLINE))
+		 && !(EX(func)->common.fn_flags & (ZEND_ACC_CLOSURE|ZEND_ACC_CALL_VIA_TRAMPOLINE))
+		 && (fbc->op_array.fn_flags & ZEND_ACC_HAS_TYPE_HINTS) == 0
+		 && EX(func)->op_array.last_try_catch == 0
+		 && RUN_TIME_CACHE(&fbc->op_array) != NULL) {
+			uint32_t tco_nargs = ZEND_CALL_NUM_ARGS(call);
+			zend_op_array *tco_ce = &fbc->op_array;
+			zend_op_array *tco_ca = &EX(func)->op_array;
+			if (tco_nargs <= (uint32_t)tco_ce->num_args
+			 && (tco_ce->last_var + tco_ce->T) <= (tco_ca->last_var + tco_ca->T)) {
+				uint32_t tco_callee_ci = ZEND_CALL_INFO(call);
+				zend_value tco_this_val = call->This.value;
+				if (EX_CALL_INFO() & ZEND_CALL_RELEASE_THIS) {
+					OBJ_RELEASE(Z_OBJ(execute_data->This));
+				}
+				zend_free_compiled_variables(execute_data);
+				{ uint32_t tco_i;
+				  for (tco_i = 0; tco_i < tco_nargs; tco_i++) {
+				      ZVAL_COPY_VALUE(EX_VAR_NUM(tco_i), ZEND_CALL_VAR_NUM(call, tco_i));
+				  }
+				  for (; tco_i < (uint32_t)tco_ce->last_var; tco_i++) {
+				      ZVAL_UNDEF(EX_VAR_NUM(tco_i));
+				  }
+				}
+				execute_data->func = fbc;
+				execute_data->This.value = tco_this_val;
+				ZEND_CALL_NUM_ARGS(execute_data) = tco_nargs;
+				Z_TYPE_INFO(execute_data->This) =
+					(ZEND_CALL_INFO(execute_data) & ~(ZEND_CALL_HAS_THIS|ZEND_CALL_RELEASE_THIS))
+					| (tco_callee_ci & (ZEND_CALL_HAS_THIS|ZEND_CALL_RELEASE_THIS));
+				EX(run_time_cache) = RUN_TIME_CACHE(tco_ce);
+				EX(call) = NULL;
+				EG(vm_stack_top) = (zval*)call;
+				EG(current_execute_data) = execute_data;
+				ZEND_VM_SET_OPCODE(tco_ce->opcodes + tco_nargs);
+				ZEND_VM_CONTINUE();
+			}
+		}
 	call->prev_execute_data = execute_data;
 	execute_data = call;
 	i_init_func_execute_data(&fbc->op_array, ret, 0 EXECUTE_DATA_CC);
@@ -4072,6 +4118,52 @@ ZEND_VM_HOT_HANDLER(131, ZEND_DO_FCALL_BY_NAME, ANY, ANY, SPEC(RETVAL,OBSERVER))
 		ret = NULL;
 		if (RETURN_VALUE_USED(opline)) {
 			ret = EX_VAR(opline->result.var);
+		}
+		if (RETURN_VALUE_USED(opline)
+		 && tco_is_tail(opline)
+		 && EXPECTED(zend_execute_ex == execute_ex)
+		 && !ZEND_OBSERVER_ENABLED
+		 && !(EX_CALL_INFO() & (ZEND_CALL_GENERATOR|ZEND_CALL_OBSERVED|ZEND_CALL_HAS_EXTRA_NAMED_PARAMS))
+		 && !(ZEND_CALL_INFO(call) & (ZEND_CALL_GENERATOR|ZEND_CALL_HAS_EXTRA_NAMED_PARAMS))
+		 && fbc->type == ZEND_USER_FUNCTION
+		 && EX(func)->type == ZEND_USER_FUNCTION
+		 && !(fbc->common.fn_flags & (ZEND_ACC_CLOSURE|ZEND_ACC_CALL_VIA_TRAMPOLINE))
+		 && !(EX(func)->common.fn_flags & (ZEND_ACC_CLOSURE|ZEND_ACC_CALL_VIA_TRAMPOLINE))
+		 && (fbc->op_array.fn_flags & ZEND_ACC_HAS_TYPE_HINTS) == 0
+		 && EX(func)->op_array.last_try_catch == 0
+		 && RUN_TIME_CACHE(&fbc->op_array) != NULL) {
+			uint32_t tco_nargs = ZEND_CALL_NUM_ARGS(call);
+			zend_op_array *tco_ce = &fbc->op_array;
+			zend_op_array *tco_ca = &EX(func)->op_array;
+			if (tco_nargs <= (uint32_t)tco_ce->num_args
+			 && (tco_ce->last_var + tco_ce->T) <= (tco_ca->last_var + tco_ca->T)) {
+				uint32_t tco_callee_ci = ZEND_CALL_INFO(call);
+				zend_value tco_this_val = call->This.value;
+				if (EX_CALL_INFO() & ZEND_CALL_RELEASE_THIS) {
+					OBJ_RELEASE(Z_OBJ(execute_data->This));
+				}
+				zend_free_compiled_variables(execute_data);
+				{ uint32_t tco_i;
+				  for (tco_i = 0; tco_i < tco_nargs; tco_i++) {
+				      ZVAL_COPY_VALUE(EX_VAR_NUM(tco_i), ZEND_CALL_VAR_NUM(call, tco_i));
+				  }
+				  for (; tco_i < (uint32_t)tco_ce->last_var; tco_i++) {
+				      ZVAL_UNDEF(EX_VAR_NUM(tco_i));
+				  }
+				}
+				execute_data->func = fbc;
+				execute_data->This.value = tco_this_val;
+				ZEND_CALL_NUM_ARGS(execute_data) = tco_nargs;
+				Z_TYPE_INFO(execute_data->This) =
+					(ZEND_CALL_INFO(execute_data) & ~(ZEND_CALL_HAS_THIS|ZEND_CALL_RELEASE_THIS))
+					| (tco_callee_ci & (ZEND_CALL_HAS_THIS|ZEND_CALL_RELEASE_THIS));
+				EX(run_time_cache) = RUN_TIME_CACHE(tco_ce);
+				EX(call) = NULL;
+				EG(vm_stack_top) = (zval*)call;
+				EG(current_execute_data) = execute_data;
+				ZEND_VM_SET_OPCODE(tco_ce->opcodes + tco_nargs);
+				ZEND_VM_CONTINUE();
+			}
 		}
 
 		call->prev_execute_data = execute_data;
@@ -4170,6 +4262,52 @@ ZEND_VM_HOT_HANDLER(60, ZEND_DO_FCALL, ANY, ANY, SPEC(RETVAL,OBSERVER))
 		ret = NULL;
 		if (RETURN_VALUE_USED(opline)) {
 			ret = EX_VAR(opline->result.var);
+		}
+		if (RETURN_VALUE_USED(opline)
+		 && tco_is_tail(opline)
+		 && EXPECTED(zend_execute_ex == execute_ex)
+		 && !ZEND_OBSERVER_ENABLED
+		 && !(EX_CALL_INFO() & (ZEND_CALL_GENERATOR|ZEND_CALL_OBSERVED|ZEND_CALL_HAS_EXTRA_NAMED_PARAMS))
+		 && !(ZEND_CALL_INFO(call) & (ZEND_CALL_GENERATOR|ZEND_CALL_HAS_EXTRA_NAMED_PARAMS))
+		 && fbc->type == ZEND_USER_FUNCTION
+		 && EX(func)->type == ZEND_USER_FUNCTION
+		 && !(fbc->common.fn_flags & (ZEND_ACC_CLOSURE|ZEND_ACC_CALL_VIA_TRAMPOLINE))
+		 && !(EX(func)->common.fn_flags & (ZEND_ACC_CLOSURE|ZEND_ACC_CALL_VIA_TRAMPOLINE))
+		 && (fbc->op_array.fn_flags & ZEND_ACC_HAS_TYPE_HINTS) == 0
+		 && EX(func)->op_array.last_try_catch == 0
+		 && RUN_TIME_CACHE(&fbc->op_array) != NULL) {
+			uint32_t tco_nargs = ZEND_CALL_NUM_ARGS(call);
+			zend_op_array *tco_ce = &fbc->op_array;
+			zend_op_array *tco_ca = &EX(func)->op_array;
+			if (tco_nargs <= (uint32_t)tco_ce->num_args
+			 && (tco_ce->last_var + tco_ce->T) <= (tco_ca->last_var + tco_ca->T)) {
+				uint32_t tco_callee_ci = ZEND_CALL_INFO(call);
+				zend_value tco_this_val = call->This.value;
+				if (EX_CALL_INFO() & ZEND_CALL_RELEASE_THIS) {
+					OBJ_RELEASE(Z_OBJ(execute_data->This));
+				}
+				zend_free_compiled_variables(execute_data);
+				{ uint32_t tco_i;
+				  for (tco_i = 0; tco_i < tco_nargs; tco_i++) {
+				      ZVAL_COPY_VALUE(EX_VAR_NUM(tco_i), ZEND_CALL_VAR_NUM(call, tco_i));
+				  }
+				  for (; tco_i < (uint32_t)tco_ce->last_var; tco_i++) {
+				      ZVAL_UNDEF(EX_VAR_NUM(tco_i));
+				  }
+				}
+				execute_data->func = fbc;
+				execute_data->This.value = tco_this_val;
+				ZEND_CALL_NUM_ARGS(execute_data) = tco_nargs;
+				Z_TYPE_INFO(execute_data->This) =
+					(ZEND_CALL_INFO(execute_data) & ~(ZEND_CALL_HAS_THIS|ZEND_CALL_RELEASE_THIS))
+					| (tco_callee_ci & (ZEND_CALL_HAS_THIS|ZEND_CALL_RELEASE_THIS));
+				EX(run_time_cache) = RUN_TIME_CACHE(tco_ce);
+				EX(call) = NULL;
+				EG(vm_stack_top) = (zval*)call;
+				EG(current_execute_data) = execute_data;
+				ZEND_VM_SET_OPCODE(tco_ce->opcodes + tco_nargs);
+				ZEND_VM_CONTINUE();
+			}
 		}
 
 		call->prev_execute_data = execute_data;
