@@ -220,6 +220,15 @@ PHP 8.6 INTERNALS UPGRADE NOTES
   . Added zend_string_ends_with() and related variants.
   . Added trait support for internal classes.
   . Added do_php_cli().
+  . Added a JIT observer API (Zend/zend_jit_observer.h). Extensions register a
+    set of handlers with zend_jit_observer_register() and are notified when the
+    tracing JIT takes a side exit (deopt), finishes compiling a trace (with its
+    side-exit table), or reaches a trace-compile outcome (stop/compiled/abort/
+    blacklist). The registry lives in core and is NULL-gated
+    (zend_jit_observers_active), so there is no overhead when unsubscribed. All
+    event fields are core types, so subscribers need no opcache internals; a
+    stable zend_jit_trace_reason enum and ZEND_JIT_DEOPT_* flag set decouple
+    consumers from opcache's private codegen bits.
 
 ========================
 2. Build system changes

@@ -14,6 +14,7 @@
 #include "php_test.h"
 #include "observer.h"
 #include "zend_observer.h"
+#include "zend_jit_observer.h"
 #include "zend_extensions.h"
 #include "zend_smart_str.h"
 #include "ext/standard/php_var.h"
@@ -381,8 +382,105 @@ static ZEND_INI_MH(zend_test_observer_OnUpdateCommaList)
 	return SUCCESS;
 }
 
+/* JIT observer test subscriber (zend_test.jit_observer.enabled): prints each
+ * distinct event once so .phpt output is deterministic. */
+
+static HashTable zt_jit_seen;
+static bool zt_jit_seen_ready = false;
+
+static void zt_jit_emit_once(const char *s)
+{
+	if (!zt_jit_seen_ready) {
+		zend_hash_init(&zt_jit_seen, 16, NULL, NULL, 1); /* persistent: freed at MSHUTDOWN */
+		zt_jit_seen_ready = true;
+	}
+	if (zend_hash_str_add_empty_element(&zt_jit_seen, s, strlen(s)) != NULL) {
+		php_printf("%s\n", s);
+	}
+}
+
+static void zt_jit_fname(char *buf, size_t n, const zend_op_array *op_array)
+{
+	if (op_array && op_array->type == ZEND_USER_FUNCTION && op_array->function_name) {
+		if (op_array->scope && op_array->scope->name) {
+			snprintf(buf, n, "%s::%s", ZSTR_VAL(op_array->scope->name), ZSTR_VAL(op_array->function_name));
+		} else {
+			snprintf(buf, n, "%s", ZSTR_VAL(op_array->function_name));
+		}
+	} else {
+		snprintf(buf, n, "%s", "$main");
+	}
+}
+
+static void zt_jit_observe_exit(const zend_jit_trace_exit_event *event)
+{
+	zend_execute_data *execute_data = event->execute_data;
+	const zend_op_array *op_array = event->op_array;
+	char fn[256], line[512];
+	uint32_t i, last;
+
+	if (!op_array || !execute_data || op_array != &EX(func)->op_array) {
+		return;   /* single-frame only, for safe CV slot indexing */
+	}
+	zt_jit_fname(fn, sizeof fn, op_array);
+	last = op_array->last_var;
+	for (i = 0; i < last; i++) {
+		zval *zv = EX_VAR_NUM(i);
+		ZVAL_DEREF(zv);
+		if (Z_TYPE_P(zv) == IS_UNDEF || Z_TYPE_P(zv) == IS_NULL) {
+			continue;
+		}
+		snprintf(line, sizeof line, "jit-observer exit func=%s var=%s type=%s",
+			fn, op_array->vars[i] ? ZSTR_VAL(op_array->vars[i]) : "?",
+			zend_zval_type_name(zv));
+		zt_jit_emit_once(line);
+	}
+}
+
+static void zt_jit_observe_compiled(const zend_jit_trace_compiled_event *event)
+{
+	char fn[256], line[512];
+	uint32_t i;
+
+	for (i = 0; i < event->exit_count; i++) {
+		const zend_jit_exit_desc *d = &event->exits[i];
+		const char *op = d->opcode ? d->opcode : "?";
+		zt_jit_fname(fn, sizeof fn, d->op_array);
+#define ZT_JIT_FLAG(bit, name) \
+		if (d->flags & (bit)) { \
+			snprintf(line, sizeof line, "jit-observer compiled func=%s opcode=%s flag=%s", fn, op, name); \
+			zt_jit_emit_once(line); \
+		}
+		ZT_JIT_FLAG(ZEND_JIT_DEOPT_POLYMORPHISM, "polymorphism")
+		ZT_JIT_FLAG(ZEND_JIT_DEOPT_METHOD_CALL,  "method_call")
+		ZT_JIT_FLAG(ZEND_JIT_DEOPT_CLOSURE_CALL, "closure_call")
+		ZT_JIT_FLAG(ZEND_JIT_DEOPT_PACKED_GUARD, "packed_guard")
+#undef ZT_JIT_FLAG
+	}
+}
+
+static void zt_jit_observe_outcome(uint32_t trace_id, zend_jit_trace_outcome outcome,
+	zend_jit_trace_reason reason, const zend_op_array *op_array, const zend_op *opline)
+{
+	static const char *const names[] = { "stop", "compiled", "abort", "blacklist", "exit_blacklist" };
+	char fn[256], line[512];
+
+	(void) trace_id; (void) opline;
+	zt_jit_fname(fn, sizeof fn, op_array);
+	snprintf(line, sizeof line, "jit-observer outcome=%s func=%s reason=%s",
+		names[outcome], fn, zend_jit_trace_reason_name(reason));
+	zt_jit_emit_once(line);
+}
+
+static const zend_jit_observer_handlers zt_jit_handlers = {
+	zt_jit_observe_exit,
+	zt_jit_observe_compiled,
+	zt_jit_observe_outcome,
+};
+
 PHP_INI_BEGIN()
 	STD_PHP_INI_BOOLEAN("zend_test.observer.enabled", "0", PHP_INI_SYSTEM, OnUpdateBool, observer_enabled, zend_zend_test_globals, zend_test_globals)
+	STD_PHP_INI_BOOLEAN("zend_test.jit_observer.enabled", "0", PHP_INI_SYSTEM, OnUpdateBool, jit_observer_enabled, zend_zend_test_globals, zend_test_globals)
 	STD_PHP_INI_BOOLEAN("zend_test.observer.show_output", "1", PHP_INI_SYSTEM, OnUpdateBool, observer_show_output, zend_zend_test_globals, zend_test_globals)
 	STD_PHP_INI_BOOLEAN("zend_test.observer.observe_all", "0", PHP_INI_SYSTEM, OnUpdateBool, observer_observe_all, zend_zend_test_globals, zend_test_globals)
 	STD_PHP_INI_BOOLEAN("zend_test.observer.observe_includes", "0", PHP_INI_SYSTEM, OnUpdateBool, observer_observe_includes, zend_zend_test_globals, zend_test_globals)
@@ -412,6 +510,9 @@ void zend_test_observer_init(INIT_FUNC_ARGS)
 				zend_get_op_array_extension_handle("zend_test");
 			}
 			zend_observer_fcall_register(observer_fcall_init);
+		}
+		if (ZT_G(jit_observer_enabled)) {
+			zend_jit_observer_register(&zt_jit_handlers);
 		}
 	} else {
 		(void)ini_entries;
@@ -448,6 +549,14 @@ void zend_test_observer_shutdown(SHUTDOWN_FUNC_ARGS)
 	if (zend_interrupt_function == zend_test_interrupt_function) {
 		zend_interrupt_function = zend_test_prev_interrupt_function;
 		zend_test_prev_interrupt_function = NULL;
+	}
+
+	if (ZT_G(jit_observer_enabled)) {
+		zend_jit_observer_unregister(&zt_jit_handlers);
+	}
+	if (zt_jit_seen_ready) {
+		zend_hash_destroy(&zt_jit_seen);
+		zt_jit_seen_ready = false;
 	}
 
 	if (type != MODULE_TEMPORARY) {

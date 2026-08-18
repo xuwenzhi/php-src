@@ -47,6 +47,7 @@
 
 /* Virtual current working directory support */
 #include "zend_virtual_cwd.h"
+#include "zend_jit_observer.h"
 
 #ifdef HAVE_GCC_GLOBAL_REGS
 # if defined(__GNUC__) && ZEND_GCC_VERSION >= 4008 && defined(i386)
@@ -5910,6 +5911,85 @@ static zend_always_inline zend_execute_data *_zend_vm_stack_push_call_frame(uint
 
 /* This callback disables optimization of "vm_stack_data" variable in VM */
 ZEND_API void (ZEND_FASTCALL *zend_touch_vm_stack_data)(void *vm_stack_data) = NULL;
+
+/* JIT observer registry (Zend/zend_jit_observer.h); process-global, MINIT-registered. */
+ZEND_API bool zend_jit_observers_active = false;
+static zend_jit_observer_handlers *jit_observers = NULL;
+static uint32_t jit_observer_count = 0;
+
+ZEND_API void zend_jit_observer_register(const zend_jit_observer_handlers *handlers)
+{
+	zend_jit_observer_handlers *tmp;
+
+	ZEND_ASSERT(!EG(current_execute_data));
+	tmp = realloc(jit_observers, sizeof(zend_jit_observer_handlers) * (jit_observer_count + 1));
+	if (!tmp) {
+		return;
+	}
+	jit_observers = tmp;
+	jit_observers[jit_observer_count++] = *handlers;
+	zend_jit_observers_active = true;
+}
+
+ZEND_API void zend_jit_observer_unregister(const zend_jit_observer_handlers *handlers)
+{
+	uint32_t i;
+
+	ZEND_ASSERT(!EG(current_execute_data));
+	for (i = 0; i < jit_observer_count; i++) {
+		if (jit_observers[i].exit == handlers->exit
+		 && jit_observers[i].compiled == handlers->compiled
+		 && jit_observers[i].outcome == handlers->outcome) {
+			memmove(&jit_observers[i], &jit_observers[i + 1],
+				sizeof(zend_jit_observer_handlers) * (jit_observer_count - i - 1));
+			jit_observer_count--;
+			break;
+		}
+	}
+	if (jit_observer_count == 0) {
+		free(jit_observers);
+		jit_observers = NULL;
+		zend_jit_observers_active = false;
+	}
+}
+
+ZEND_API void zend_jit_observer_notify_exit(const zend_jit_trace_exit_event *event)
+{
+	uint32_t i;
+	for (i = 0; i < jit_observer_count; i++) {
+		if (jit_observers[i].exit) jit_observers[i].exit(event);
+	}
+}
+
+ZEND_API void zend_jit_observer_notify_compiled(const zend_jit_trace_compiled_event *event)
+{
+	uint32_t i;
+	for (i = 0; i < jit_observer_count; i++) {
+		if (jit_observers[i].compiled) jit_observers[i].compiled(event);
+	}
+}
+
+ZEND_API void zend_jit_observer_notify_outcome(uint32_t trace_id,
+	zend_jit_trace_outcome outcome, zend_jit_trace_reason reason,
+	const zend_op_array *op_array, const zend_op *opline)
+{
+	uint32_t i;
+	for (i = 0; i < jit_observer_count; i++) {
+		if (jit_observers[i].outcome) {
+			jit_observers[i].outcome(trace_id, outcome, reason, op_array, opline);
+		}
+	}
+}
+
+ZEND_API const char *zend_jit_trace_reason_name(zend_jit_trace_reason reason)
+{
+	switch (reason) {
+#define ZEND_JIT_REASON_CASE(name, desc) case ZEND_JIT_REASON_ ## name: return desc;
+		ZEND_JIT_TRACE_REASON(ZEND_JIT_REASON_CASE)
+#undef ZEND_JIT_REASON_CASE
+		default: return "unknown";
+	}
+}
 
 #include "zend_vm_execute.h"
 

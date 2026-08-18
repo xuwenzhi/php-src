@@ -20,6 +20,7 @@
 #include <ZendAccelerator.h>
 #include "zend_shared_alloc.h"
 #include "Zend/zend_execute.h"
+#include "Zend/zend_jit_observer.h"
 #include "Zend/zend_vm.h"
 #include "Zend/zend_exceptions.h"
 #include "Zend/zend_constants.h"

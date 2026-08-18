@@ -35,6 +35,48 @@ static const char * zend_jit_trace_stop_description[] = {
 	ZEND_JIT_TRACE_STOP(ZEND_JIT_TRACE_STOP_DESCRIPTION)
 };
 
+/* (zend_jit_trace_reason)stop is an identity cast; assert every entry stays in
+ * lock-step with the core copy in Zend/zend_jit_observer.h. */
+#define ZEND_JIT_REASON_DRIFT_CHECK(name, desc) \
+	ZEND_STATIC_ASSERT((int)ZEND_JIT_TRACE_STOP_##name == (int)ZEND_JIT_REASON_##name, \
+		"JIT reason enum drift: " #name);
+ZEND_JIT_TRACE_REASON(ZEND_JIT_REASON_DRIFT_CHECK)
+#undef ZEND_JIT_REASON_DRIFT_CHECK
+
+static void zend_jit_notify_trace_compiled(const zend_jit_trace_info *t)
+{
+	zend_jit_trace_compiled_event event;
+	zend_jit_exit_desc *exits;
+	int i;
+
+	if (EXPECTED(!zend_jit_observers_active) || t->exit_count == 0) {
+		return;
+	}
+	exits = emalloc(sizeof(zend_jit_exit_desc) * t->exit_count);
+	for (i = 0; i < t->exit_count; i++) {
+		uint32_t f = t->exit_info[i].flags;
+		uint32_t mapped = 0;
+		const zend_op *opline = t->exit_info[i].opline;
+
+		if (f & ZEND_JIT_EXIT_TO_VM)        mapped |= ZEND_JIT_DEOPT_TO_VM;
+		if (f & ZEND_JIT_EXIT_POLYMORPHISM) mapped |= ZEND_JIT_DEOPT_POLYMORPHISM;
+		if (f & ZEND_JIT_EXIT_METHOD_CALL)  mapped |= ZEND_JIT_DEOPT_METHOD_CALL;
+		if (f & ZEND_JIT_EXIT_CLOSURE_CALL) mapped |= ZEND_JIT_DEOPT_CLOSURE_CALL;
+		if (f & ZEND_JIT_EXIT_PACKED_GUARD) mapped |= ZEND_JIT_DEOPT_PACKED_GUARD;
+		if (f & ZEND_JIT_EXIT_BLACKLISTED)  mapped |= ZEND_JIT_DEOPT_BLACKLISTED;
+
+		exits[i].flags    = mapped;
+		exits[i].opcode   = opline ? zend_get_opcode_name(opline->opcode) : NULL;
+		exits[i].op_array = t->exit_info[i].op_array;
+		exits[i].opline   = opline;
+	}
+	event.trace_id   = t->id;
+	event.exit_count = t->exit_count;
+	event.exits      = exits;
+	zend_jit_observer_notify_compiled(&event);
+	efree(exits);
+}
+
 static zend_always_inline const char *zend_jit_trace_star_desc(uint8_t trace_flags)
 {
 	if (trace_flags & ZEND_JIT_TRACE_START_LOOP) {
@@ -7661,6 +7703,10 @@ exit:;
 		zend_jit_dump_exit_info(t);
 	}
 
+	if (ret == ZEND_JIT_TRACE_STOP_COMPILED) {
+		zend_jit_notify_trace_compiled(t);
+	}
+
 	return ret;
 }
 
@@ -8243,12 +8289,18 @@ repeat:
 					zend_jit_trace_stop_description[stop]);
 			}
 		}
+		if (UNEXPECTED(zend_jit_observers_active)) {
+			zend_jit_observer_notify_outcome(trace_num, ZEND_JIT_TRACE_OUTCOME_STOP, (zend_jit_trace_reason)stop, op_array, orig_opline);
+		}
 		stop = zend_jit_compile_root_trace(trace_buffer, orig_opline, offset);
 		if (EXPECTED(ZEND_JIT_TRACE_STOP_DONE(stop))) {
 			if (JIT_G(debug) & ZEND_JIT_DEBUG_TRACE_COMPILED) {
 				fprintf(stderr, "---- TRACE %d %s\n",
 					trace_num,
 					zend_jit_trace_stop_description[stop]);
+			}
+			if (UNEXPECTED(zend_jit_observers_active)) {
+				zend_jit_observer_notify_outcome(trace_num, ZEND_JIT_TRACE_OUTCOME_COMPILED, (zend_jit_trace_reason)stop, op_array, orig_opline);
 			}
 		} else {
 			goto abort;
@@ -8260,11 +8312,17 @@ abort:
 				trace_num,
 				zend_jit_trace_stop_description[stop]);
 		}
+		if (UNEXPECTED(zend_jit_observers_active)) {
+			zend_jit_observer_notify_outcome(trace_num, ZEND_JIT_TRACE_OUTCOME_ABORT, (zend_jit_trace_reason)stop, op_array, orig_opline);
+		}
 		if (!ZEND_JIT_TRACE_STOP_MAY_RECOVER(stop)
 		 || zend_jit_trace_is_bad_root(orig_opline, stop, offset)) {
 			if (JIT_G(debug) & ZEND_JIT_DEBUG_TRACE_BLACKLIST) {
 				fprintf(stderr, "---- TRACE %d blacklisted\n",
 					trace_num);
+			}
+			if (UNEXPECTED(zend_jit_observers_active)) {
+				zend_jit_observer_notify_outcome(trace_num, ZEND_JIT_TRACE_OUTCOME_BLACKLIST, (zend_jit_trace_reason)stop, op_array, orig_opline);
 			}
 			zend_jit_blacklist_root_trace(orig_opline, offset);
 		}
@@ -8506,6 +8564,10 @@ exit:;
 		zend_jit_dump_exit_info(t);
 	}
 
+	if (ret == ZEND_JIT_TRACE_STOP_COMPILED) {
+		zend_jit_notify_trace_compiled(t);
+	}
+
 	return ret;
 }
 
@@ -8632,6 +8694,9 @@ int ZEND_FASTCALL zend_jit_trace_hot_side(zend_execute_data *execute_data, uint3
 					zend_jit_trace_stop_description[stop]);
 			}
 		}
+		if (UNEXPECTED(zend_jit_observers_active)) {
+			zend_jit_observer_notify_outcome(trace_num, ZEND_JIT_TRACE_OUTCOME_STOP, (zend_jit_trace_reason)stop, trace_buffer[0].op_array, trace_buffer[1].opline);
+		}
 		if (EXPECTED(trace_buffer->start == ZEND_JIT_TRACE_START_SIDE)) {
 			stop = zend_jit_compile_side_trace(trace_buffer, parent_num, exit_num, polymorphism);
 		} else {
@@ -8648,6 +8713,9 @@ int ZEND_FASTCALL zend_jit_trace_hot_side(zend_execute_data *execute_data, uint3
 					trace_num,
 					zend_jit_trace_stop_description[stop]);
 			}
+			if (UNEXPECTED(zend_jit_observers_active)) {
+				zend_jit_observer_notify_outcome(trace_num, ZEND_JIT_TRACE_OUTCOME_COMPILED, (zend_jit_trace_reason)stop, trace_buffer[0].op_array, trace_buffer[1].opline);
+			}
 		} else {
 			goto abort;
 		}
@@ -8658,12 +8726,18 @@ abort:
 				trace_num,
 				zend_jit_trace_stop_description[stop]);
 		}
+		if (UNEXPECTED(zend_jit_observers_active)) {
+			zend_jit_observer_notify_outcome(trace_num, ZEND_JIT_TRACE_OUTCOME_ABORT, (zend_jit_trace_reason)stop, trace_buffer[0].op_array, trace_buffer[1].opline);
+		}
 		if (!ZEND_JIT_TRACE_STOP_MAY_RECOVER(stop)
 		 || zend_jit_trace_exit_is_bad(parent_num, exit_num)) {
 			zend_jit_blacklist_trace_exit(parent_num, exit_num);
 			if (JIT_G(debug) & ZEND_JIT_DEBUG_TRACE_BLACKLIST) {
 				fprintf(stderr, "---- EXIT %d/%d blacklisted\n",
 					parent_num, exit_num);
+			}
+			if (UNEXPECTED(zend_jit_observers_active)) {
+				zend_jit_observer_notify_outcome(trace_num, ZEND_JIT_TRACE_OUTCOME_EXIT_BLACKLIST, (zend_jit_trace_reason)stop, trace_buffer[0].op_array, trace_buffer[1].opline);
 			}
 		}
 		if (ZEND_JIT_TRACE_STOP_REPEAT(stop)) {
@@ -8761,6 +8835,16 @@ int ZEND_FASTCALL zend_jit_trace_exit(uint32_t exit_num, zend_jit_registers_buf 
 				ZEND_UNREACHABLE();
 			}
 		}
+	}
+
+	if (UNEXPECTED(zend_jit_observers_active)) {
+		zend_jit_trace_exit_event event;
+		event.trace_id     = t->id;
+		event.exit_num     = exit_num;
+		event.op_array     = t->exit_info[exit_num].op_array;
+		event.opline       = t->exit_info[exit_num].opline;
+		event.execute_data = execute_data;
+		zend_jit_observer_notify_exit(&event);
 	}
 
 	if (repeat_last_opline) {
